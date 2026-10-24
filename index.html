@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DJ Ilú - Player e Compartilhamento de Playlist</title>
+  <title>DJ Ilú - Assistente e Player de Mixagem</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
@@ -37,74 +37,25 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-    // --- BANCO LOCAL INDEXEDDB ---
-    const DB_NAME = 'DJIluDB';
-    const STORE_NAME = 'tracks';
-
-    const initDB = () => {
-      return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, 1);
-        request.onupgradeneeded = (e) => {
-          const db = e.target.result;
-          if (!db.objectStoreNames.contains(STORE_NAME)) {
-            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-          }
-        };
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
-    };
-
-    const saveTrackToDB = async (track) => {
-      const db = await initDB();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        store.put(track);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-    };
-
-    const getAllTracksFromDB = async () => {
-      const db = await initDB();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const req = store.getAll();
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      });
-    };
-
-    const deleteTrackFromDB = async (id) => {
-      const db = await initDB();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        store.delete(id);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-    };
-
     function App() {
       const [shareModeData, setShareModeData] = useState(null);
-      const [tracks, setTracks] = useState([]);
       const [currentIndex, setCurrentIndex] = useState(0);
       const [isPlaying, setIsPlaying] = useState(false);
       const [currentTime, setCurrentTime] = useState(0);
       const [duration, setDuration] = useState(0);
       const [crossfadeTime, setCrossfadeTime] = useState(6);
       const [djAlanEffect, setDjAlanEffect] = useState(false);
+      const [currentPlaylistId, setCurrentPlaylistId] = useState('p1');
       const [currentPlaylistName, setCurrentPlaylistName] = useState('Entrada do Casamento');
+      const [tracks, setTracks] = useState([]);
       const [toast, setToast] = useState(null);
 
+      // Playlists salvando as suas respectivas músicas no LocalStorage
       const [playlists, setPlaylists] = useState(() => {
-        const saved = localStorage.getItem('dj_ilu_playlists_v4');
+        const saved = localStorage.getItem('dj_ilu_playlists_v5');
         return saved ? JSON.parse(saved) : [
-          { id: 'p1', name: 'Entrada do Casamento', crossfadeTime: 6, djAlanEffect: false },
-          { id: 'p2', name: 'Festa e Recepção', crossfadeTime: 4, djAlanEffect: true }
+          { id: 'p1', name: 'Entrada do Casamento', crossfadeTime: 6, djAlanEffect: false, tracks: [] },
+          { id: 'p2', name: 'Festa e Recepção', crossfadeTime: 4, djAlanEffect: true, tracks: [] }
         ];
       });
 
@@ -125,10 +76,12 @@
         setTimeout(() => setToast(null), 4000);
       };
 
+      // Sincronizar playlists e músicas no localStorage
       useEffect(() => {
-        localStorage.setItem('dj_ilu_playlists_v4', JSON.stringify(playlists));
+        localStorage.setItem('dj_ilu_playlists_v5', JSON.stringify(playlists));
       }, [playlists]);
 
+      // Ao carregar a página, se houver playlist ativa, puxa as músicas dela
       useEffect(() => {
         const hash = window.location.hash;
         if (hash.startsWith('#share')) {
@@ -139,13 +92,15 @@
           const crossfade = Number(params.get('cf')) || 6;
 
           setShareModeData({ name, trackNames, crossfade });
-        }
-
-        getAllTracksFromDB().then((savedTracks) => {
-          if (savedTracks && savedTracks.length > 0) {
-            setTracks(savedTracks);
+        } else {
+          const activePl = playlists.find(p => p.id === currentPlaylistId) || playlists[0];
+          if (activePl) {
+            setCurrentPlaylistName(activePl.name);
+            setCrossfadeTime(activePl.crossfadeTime || 6);
+            setDjAlanEffect(activePl.djAlanEffect || false);
+            setTracks(activePl.tracks || []);
           }
-        });
+        }
       }, []);
 
       useEffect(() => {
@@ -169,24 +124,25 @@
         };
       }, [currentIndex, tracks]);
 
-      const handleFileUpload = async (e) => {
+      // Upload de MP3 adicionando à playlist atual
+      const handleFileUpload = (e) => {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
 
-        try {
-          for (let file of files) {
-            const trackData = {
-              id: 'track_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5),
-              name: file.name.replace(/\.[^/.]+$/, ''),
-              file: file,
-            };
-            await saveTrackToDB(trackData);
-            setTracks((prev) => [...prev, trackData]);
-          }
-          showToastMessage('success', `${files.length} música(s) adicionada(s)!`);
-        } catch (err) {
-          showToastMessage('error', `Erro ao carregar arquivos: ${err.message}`);
-        }
+        const newTracks = files.map(file => ({
+          id: 'track_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5),
+          name: file.name.replace(/\.[^/.]+$/, ''),
+          url: URL.createObjectURL(file) // URL local para reprodução imediata
+        }));
+
+        setTracks(prev => {
+          const updated = [...prev, ...newTracks];
+          // Atualiza também na lista geral de playlists
+          setPlaylists(list => list.map(p => p.id === currentPlaylistId ? { ...p, tracks: updated } : p));
+          return updated;
+        });
+
+        showToastMessage('success', `${files.length} música(s) adicionada(s) à playlist "${currentPlaylistName}"!`);
       };
 
       const playTrackAtIndex = (index) => {
@@ -196,21 +152,20 @@
         setCurrentIndex(index);
 
         try {
-          const fileUrl = URL.createObjectURL(tracks[index].file);
-          currentAudio.src = fileUrl;
+          currentAudio.src = tracks[index].url;
           currentAudio.play().then(() => {
             setIsPlaying(true);
           }).catch(err => {
-            showToastMessage('error', `Para ouvir, selecione ou envie os arquivos de áudio no navegador.`);
+            showToastMessage('error', `Erro ao reproduzir arquivo.`);
           });
         } catch (e) {
-          showToastMessage('error', 'Selecione os arquivos MP3 para iniciar a reprodução.');
+          showToastMessage('error', 'Falha ao iniciar áudio.');
         }
       };
 
       const togglePlay = () => {
         if (tracks.length === 0) {
-          showToastMessage('error', 'Selecione os arquivos MP3 para ouvir.');
+          showToastMessage('error', 'Nenhuma música na playlist. Adicione arquivos MP3.');
           return;
         }
 
@@ -249,7 +204,7 @@
         const nextAudio = activeAudioRef.current === 1 ? audioRef2.current : audioRef1.current;
 
         try {
-          nextAudio.src = URL.createObjectURL(tracks[nextIdx].file);
+          nextAudio.src = tracks[nextIdx].url;
           nextAudio.volume = 1;
           nextAudio.play();
 
@@ -282,15 +237,52 @@
         setCurrentTime(newTime);
       };
 
-      const handleManualSave = () => {
-        setPlaylists((prev) => {
-          const exists = prev.find(p => p.name.toLowerCase() === currentPlaylistName.toLowerCase());
-          if (exists) {
-            return prev.map(p => p.id === exists.id ? { ...p, crossfadeTime, djAlanEffect } : p);
-          } else {
-            return [...prev, { id: 'pl_' + Date.now(), name: currentPlaylistName, crossfadeTime, djAlanEffect }];
-          }
+      const moveTrackUp = (index) => {
+        if (index <= 0) return;
+        setTracks((prev) => {
+          const newArr = [...prev];
+          const temp = newArr[index - 1];
+          newArr[index - 1] = newArr[index];
+          newArr[index] = temp;
+          setPlaylists(list => list.map(p => p.id === currentPlaylistId ? { ...p, tracks: newArr } : p));
+          return newArr;
         });
+        if (currentIndex === index) setCurrentIndex(index - 1);
+        else if (currentIndex === index - 1) setCurrentIndex(index);
+      };
+
+      const moveTrackDown = (index) => {
+        if (index >= tracks.length - 1) return;
+        setTracks((prev) => {
+          const newArr = [...prev];
+          const temp = newArr[index + 1];
+          newArr[index + 1] = newArr[index];
+          newArr[index] = temp;
+          setPlaylists(list => list.map(p => p.id === currentPlaylistId ? { ...p, tracks: newArr } : p));
+          return newArr;
+        });
+        if (currentIndex === index) setCurrentIndex(index + 1);
+        else if (currentIndex === index + 1) setCurrentIndex(index);
+      };
+
+      const removeTrack = (index) => {
+        setTracks((prev) => {
+          const updated = prev.filter((_, i) => i !== index);
+          setPlaylists(list => list.map(p => p.id === currentPlaylistId ? { ...p, tracks: updated } : p));
+          return updated;
+        });
+        if (index === currentIndex && isPlaying) setIsPlaying(false);
+        showToastMessage('success', 'Música removida da playlist.');
+      };
+
+      const handleManualSave = () => {
+        setPlaylists((prev) => prev.map(p => p.id === currentPlaylistId ? {
+          ...p,
+          name: currentPlaylistName,
+          crossfadeTime,
+          djAlanEffect,
+          tracks
+        } : p));
         showToastMessage('success', `Playlist "${currentPlaylistName}" salva com sucesso!`);
       };
 
@@ -299,34 +291,59 @@
           showToastMessage('error', 'Digite um nome para a playlist.');
           return;
         }
+        const newId = 'pl_' + Date.now();
         const newEntry = {
-          id: 'pl_' + Date.now(),
+          id: newId,
           name: newPlaylistInput.trim(),
-          crossfadeTime,
-          djAlanEffect
+          crossfadeTime: 6,
+          djAlanEffect: false,
+          tracks: []
         };
         setPlaylists((prev) => [...prev, newEntry]);
         setNewPlaylistInput('');
-        showToastMessage('success', 'Nova playlist criada!');
+        
+        // Seleciona a nova playlist automaticamente
+        setCurrentPlaylistId(newId);
+        setCurrentPlaylistName(newEntry.name);
+        setCrossfadeTime(6);
+        setDjAlanEffect(false);
+        setTracks([]);
+        setShowPlaylistModal(false);
+
+        showToastMessage('success', 'Nova playlist criada e ativada!');
+      };
+
+      // Carregar/Editar playlist direto do modal
+      const loadPlaylistForEditing = (pl) => {
+        setCurrentPlaylistId(pl.id);
+        setCurrentPlaylistName(pl.name);
+        setCrossfadeTime(pl.crossfadeTime || 6);
+        setDjAlanEffect(pl.djAlanEffect || false);
+        setTracks(pl.tracks || []);
+        setShowPlaylistModal(false);
+        showToastMessage('success', `Editando playlist "${pl.name}"!`);
       };
 
       const playPlaylistDirectly = (pl) => {
+        setCurrentPlaylistId(pl.id);
         setCurrentPlaylistName(pl.name);
-        setCrossfadeTime(pl.crossfadeTime);
-        setDjAlanEffect(pl.djAlanEffect);
+        setCrossfadeTime(pl.crossfadeTime || 6);
+        setDjAlanEffect(pl.djAlanEffect || false);
+        setTracks(pl.tracks || []);
         setShowPlaylistModal(false);
+        setCurrentIndex(0);
 
-        if (tracks.length > 0) {
+        if (pl.tracks && pl.tracks.length > 0) {
           playTrackAtIndex(0);
           showToastMessage('success', `Tocando playlist "${pl.name}"!`);
         } else {
-          showToastMessage('success', `Playlist "${pl.name}" selecionada!`);
+          showToastMessage('success', `Playlist "${pl.name}" selecionada! Adicione MP3.`);
         }
       };
 
       const handleSharePlaylist = () => {
         if (tracks.length === 0) {
-          showToastMessage('error', 'Adicione músicas à fila antes de compartilhar.');
+          showToastMessage('error', 'Adicione músicas à playlist antes de compartilhar.');
           return;
         }
         const trackNamesStr = encodeURIComponent(tracks.map(t => t.name).join('|'));
@@ -364,32 +381,19 @@
         return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
       };
 
-      // -----------------------------------------------------------------
-      // MODO COMPARTILHADO COM PLAYER DIRETO NESTA MESMA ABA
-      // -----------------------------------------------------------------
       if (shareModeData) {
         return (
           <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-gradient-to-b from-black via-zinc-900 to-black text-white relative">
-            
-            {toast && (
-              <div className="fixed top-5 right-5 z-50 px-5 py-3 rounded-xl bg-emerald-950/90 border border-emerald-500 text-emerald-200 text-sm font-semibold shadow-2xl">
-                {toast.message}
-              </div>
-            )}
-
             <div className="max-w-md w-full glass-card p-8 rounded-3xl border border-white/10 shadow-2xl flex flex-col items-center text-center gap-6">
-              
               <div className="w-20 h-20 bg-gradient-to-tr from-purple-600 to-indigo-500 rounded-full flex items-center justify-center text-4xl shadow-xl shadow-purple-500/25 animate-pulse">
                 🎧
               </div>
-
               <div>
                 <span className="text-xs font-semibold uppercase tracking-widest text-purple-400">DJ Ilú • Playlist</span>
                 <h1 className="text-2xl font-black text-white mt-1">{shareModeData.name}</h1>
                 <p className="text-xs text-gray-400 mt-1">{shareModeData.trackNames.length} faixas na playlist</p>
               </div>
 
-              {/* CONTROLE DE PLAY DIRETO NESTA TELA */}
               <div className="w-full bg-white/5 border border-white/10 p-4 rounded-2xl flex flex-col items-center gap-3">
                 <button
                   onClick={togglePlay}
@@ -398,52 +402,16 @@
                   <i className={`fa-solid ${isPlaying ? 'fa-pause text-xl' : 'fa-play text-xl'}`}></i>
                   <span>{isPlaying ? 'Pausar Playlist' : '▶ Executar Playlist Agora'}</span>
                 </button>
-
-                {/* CARREGADOR DE ÁUDIO SE FOR PRIMEIRO ACESSO */}
-                {tracks.length === 0 && (
-                  <label className="text-xs text-purple-300 hover:text-purple-200 cursor-pointer underline flex items-center gap-1 mt-1">
-                    <i className="fa-solid fa-file-audio"></i> Carregar arquivos de áudio MP3 para ouvir nesta aba
-                    <input
-                      type="file"
-                      multiple
-                      accept="audio/*"
-                      onChange={handleFileUpload}
-                      className="hidden"
-                    />
-                  </label>
-                )}
               </div>
 
-              {/* BARRA DE PROGRESSO DO ÁUDIO */}
-              {tracks.length > 0 && (
-                <div className="w-full flex flex-col gap-1">
-                  <div className="flex justify-between text-[10px] text-gray-400">
-                    <span>{formatTime(currentTime)}</span>
-                    <span className="text-purple-300 font-semibold">{tracks[currentIndex]?.name}</span>
-                    <span>{formatTime(duration)}</span>
-                  </div>
-                  <div onClick={handleSeek} className="w-full h-2 bg-gray-800 rounded-full cursor-pointer overflow-hidden">
-                    <div className="h-full bg-purple-500 rounded-full" style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }}></div>
-                  </div>
-                </div>
-              )}
-
-              {/* LISTA DAS MÚSICAS COM PLAY INDIVIDUAL NESTA ABA */}
               <div className="w-full text-left bg-black/40 p-4 rounded-2xl border border-white/5 max-h-56 overflow-y-auto custom-scrollbar flex flex-col gap-2">
                 <span className="text-[10px] uppercase font-bold text-gray-500 tracking-wider">Músicas da Playlist</span>
                 {shareModeData.trackNames.map((name, idx) => (
-                  <div
-                    key={idx}
-                    onClick={() => playTrackAtIndex(idx)}
-                    className={`text-xs py-2 px-2 rounded-lg border border-transparent hover:border-purple-500/30 hover:bg-white/5 cursor-pointer flex items-center justify-between gap-2 transition ${
-                      idx === currentIndex && isPlaying ? 'text-purple-300 font-bold bg-purple-950/40' : 'text-gray-300'
-                    }`}
-                  >
+                  <div key={idx} className="text-xs py-2 px-2 rounded-lg border border-transparent text-gray-300 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 truncate">
                       <span className="text-purple-400 font-mono text-[10px]">{idx + 1}.</span>
                       <span className="truncate">{name}</span>
                     </div>
-                    <i className={`fa-solid ${idx === currentIndex && isPlaying ? 'fa-volume-high text-purple-400' : 'fa-circle-play text-gray-500'}`}></i>
                   </div>
                 ))}
               </div>
@@ -462,9 +430,6 @@
         );
       }
 
-      // -----------------------------------------------------------------
-      // MODO STUDIO COMPLETO (HOME)
-      // -----------------------------------------------------------------
       return (
         <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto flex flex-col gap-6 relative">
           
@@ -517,6 +482,8 @@
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 flex flex-col gap-6">
+              
+              {/* DROPZONE MP3 */}
               <div className="glass-card p-6 rounded-2xl border-dashed border-2 border-purple-500/30 hover:border-purple-500/60 transition text-center flex flex-col items-center justify-center relative">
                 <input
                   type="file"
@@ -526,8 +493,8 @@
                   className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                 />
                 <i className="fa-solid fa-cloud-arrow-up text-3xl text-purple-400 mb-2"></i>
-                <p className="font-semibold text-base">Arraste seus arquivos MP3 para cá</p>
-                <p className="text-xs text-purple-300/50 mt-1">Sua música fica salva localmente no navegador</p>
+                <p className="font-semibold text-base">Arraste seus arquivos MP3 para adicionar à playlist ativa</p>
+                <p className="text-xs text-purple-300/50 mt-1">Playlist atual: <strong className="text-purple-300">{currentPlaylistName}</strong></p>
               </div>
 
               <div className="glass-card p-6 rounded-2xl flex flex-col gap-5">
@@ -588,15 +555,6 @@
                       className="h-full bg-gradient-to-r from-purple-700 to-indigo-500 opacity-60 transition-all duration-100"
                       style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }}
                     ></div>
-
-                    {duration > 0 && (
-                      <div
-                        className="absolute right-0 top-0 bottom-0 bg-red-500/20 border-l border-red-500/50 flex items-center justify-center text-[10px] text-red-300 font-bold uppercase tracking-wider"
-                        style={{ width: `${(crossfadeTime / duration) * 100}%` }}
-                      >
-                        Cross
-                      </div>
-                    )}
                   </div>
                 </div>
 
@@ -643,14 +601,15 @@
                 </button>
               </div>
 
+              {/* FILA DA PLAYLIST COM OPÇÕES DE SUBIR, DESCER E APAGAR */}
               <div className="glass-card p-6 rounded-2xl flex flex-col h-[360px]">
                 <div className="flex justify-between items-center mb-3">
                   <h3 className="font-bold text-purple-300 flex items-center gap-2">
-                    <i className="fa-solid fa-list-ul"></i> Fila da Playlist ({tracks.length})
+                    <i className="fa-solid fa-list-ul"></i> Fila da Playlist: {currentPlaylistName} ({tracks.length})
                   </h3>
                   {tracks.length > 0 && (
-                    <button onClick={() => setTracks([])} className="text-xs text-red-400 hover:text-red-300">
-                      Limpar
+                    <button onClick={() => { setTracks([]); handleManualSave(); }} className="text-xs text-red-400 hover:text-red-300">
+                      Limpar Fila
                     </button>
                   )}
                 </div>
@@ -658,7 +617,7 @@
                 <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-2 pr-1">
                   {tracks.length === 0 ? (
                     <div className="text-center text-purple-300/40 text-sm my-auto">
-                      Nenhuma música na fila. Envie seus MP3 acima.
+                      Nenhuma música nesta playlist. Arraste arquivos MP3 acima para começar a editar.
                     </div>
                   ) : (
                     tracks.map((track, idx) => (
@@ -671,6 +630,16 @@
                         }`}
                       >
                         <div className="flex items-center gap-2 min-w-0">
+                          {/* BOTÕES PARA SUBIR E DESCER MÚSICA */}
+                          <div className="flex flex-col gap-1 text-purple-300/60">
+                            <button onClick={() => moveTrackUp(idx)} disabled={idx === 0} className="hover:text-purple-300 disabled:opacity-20 text-[10px]">
+                              <i className="fa-solid fa-chevron-up"></i>
+                            </button>
+                            <button onClick={() => moveTrackDown(idx)} disabled={idx === tracks.length - 1} className="hover:text-purple-300 disabled:opacity-20 text-[10px]">
+                              <i className="fa-solid fa-chevron-down"></i>
+                            </button>
+                          </div>
+
                           <span className="text-xs font-mono opacity-50 w-4">{idx + 1}</span>
                           <span className="text-sm truncate font-medium">{track.name}</span>
                         </div>
@@ -679,15 +648,14 @@
                           <button
                             onClick={() => playTrackAtIndex(idx)}
                             className="text-purple-400 hover:text-purple-200 p-1"
+                            title="Tocar esta música"
                           >
                             <i className="fa-solid fa-play text-xs"></i>
                           </button>
                           <button
-                            onClick={async () => {
-                              await deleteTrackFromDB(track.id);
-                              setTracks(prev => prev.filter(t => t.id !== track.id));
-                            }}
+                            onClick={() => removeTrack(idx)}
                             className="text-gray-500 hover:text-red-400 p-1"
+                            title="Remover música"
                           >
                             <i className="fa-solid fa-xmark text-xs"></i>
                           </button>
@@ -744,7 +712,7 @@
             </div>
           </div>
 
-          {/* MODAL PLAYLISTS */}
+          {/* MODAL DE GERENCIAMENTO DE PLAYLISTS */}
           {showPlaylistModal && (
             <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
               <div className="glass-card p-6 rounded-2xl max-w-lg w-full border border-purple-500/30 flex flex-col gap-4 max-h-[80vh]">
@@ -781,7 +749,7 @@
                     >
                       <div>
                         <h4 className="font-bold text-purple-200">{pl.name}</h4>
-                        <span className="text-xs text-purple-300/50">Crossfade: {pl.crossfadeTime}s</span>
+                        <span className="text-xs text-purple-300/50">{pl.tracks?.length || 0} músicas • Crossfade: {pl.crossfadeTime}s</span>
                       </div>
                       <div className="flex items-center gap-2">
                         <button
@@ -791,14 +759,8 @@
                           <i className="fa-solid fa-play text-[10px]"></i> Tocar
                         </button>
                         <button
-                          onClick={() => {
-                            setCurrentPlaylistName(pl.name);
-                            setCrossfadeTime(pl.crossfadeTime);
-                            setDjAlanEffect(pl.djAlanEffect);
-                            setShowPlaylistModal(false);
-                            showToastMessage('success', `Playlist "${pl.name}" pronta para edição!`);
-                          }}
-                          className="px-3 py-1.5 bg-purple-600/60 hover:bg-purple-500/80 rounded-lg text-xs font-medium text-purple-200"
+                          onClick={() => loadPlaylistForEditing(pl)}
+                          className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 rounded-lg text-xs font-semibold text-white"
                         >
                           Editar
                         </button>
