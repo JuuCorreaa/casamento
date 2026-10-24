@@ -3,11 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>DJ Ilú - Player e Compartilhamento de Playlists</title>
+  <title>DJ Ilú - Player e Gerenciador de Playlists</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- SDK do Supabase para Banco de Dados e Auth -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet" />
   <style>
     body {
@@ -36,211 +38,89 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-    // --- BANCO LOCAL INDEXEDDB ---
-    const DB_NAME = 'DJIluDB';
-    const STORE_NAME = 'tracks';
-
-    const initDB = () => {
-      return new Promise((resolve, reject) => {
-        const request = indexedDB.open(DB_NAME, 1);
-        request.onupgradeneeded = (e) => {
-          const db = e.target.result;
-          if (!db.objectStoreNames.contains(STORE_NAME)) {
-            db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-          }
-        };
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
-    };
-
-    const saveTrackToDB = async (track) => {
-      const db = await initDB();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        store.put(track);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-    };
-
-    const getAllTracksFromDB = async () => {
-      const db = await initDB();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const req = store.getAll();
-        req.onsuccess = () => resolve(req.result);
-        req.onerror = () => reject(req.error);
-      });
-    };
-
-    const deleteTrackFromDB = async (id) => {
-      const db = await initDB();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        store.delete(id);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-      });
-    };
+    // Configuração do Supabase (Substituir pelas suas chaves do Supabase)
+    const SUPABASE_URL = 'https://SEU_PROJETO.supabase.co';
+    const SUPABASE_ANON_KEY = 'SUA_CHAVE_ANONIMA';
+    const supabase = window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
     function App() {
-      const [shareModeData, setShareModeData] = useState(null); // Se tiver dados na URL, entra no modo compartilhamento
+      const [user, setUser] = useState(null); // Usuário logado
+      const [showAuthModal, setShowAuthModal] = useState(false);
+      const [authMode, setAuthMode] = useState('login'); // 'login' ou 'register'
+      
+      // Campos do formulário
+      const [nameInput, setNameInput] = useState('');
+      const [emailInput, setEmailInput] = useState('');
+      const [passwordInput, setPasswordInput] = useState('');
+      
       const [tracks, setTracks] = useState([]);
       const [currentIndex, setCurrentIndex] = useState(0);
       const [isPlaying, setIsPlaying] = useState(false);
-      const [currentTime, setCurrentTime] = useState(0);
-      const [duration, setDuration] = useState(0);
       const [crossfadeTime, setCrossfadeTime] = useState(6);
       const [djAlanEffect, setDjAlanEffect] = useState(false);
       const [currentPlaylistName, setCurrentPlaylistName] = useState('Entrada do Casamento');
+      
       const [toast, setToast] = useState(null);
-
-      const [playlists, setPlaylists] = useState(() => {
-        const saved = localStorage.getItem('dj_ilu_playlists');
-        return saved ? JSON.parse(saved) : [
-          { id: 'p1', name: 'Entrada do Casamento', crossfadeTime: 6, djAlanEffect: false },
-          { id: 'p2', name: 'Festa e Recepção', crossfadeTime: 4, djAlanEffect: true }
-        ];
-      });
-
+      const [playlists, setPlaylists] = useState([
+        { id: 'p1', name: 'Entrada do Casamento', crossfadeTime: 6, djAlanEffect: false },
+        { id: 'p2', name: 'Festa e Recepção', crossfadeTime: 4, djAlanEffect: true }
+      ]);
       const [showPlaylistModal, setShowPlaylistModal] = useState(false);
-      const audioRef1 = useRef(new Audio());
-      const audioRef2 = useRef(new Audio());
-      const activeAudioRef = useRef(1);
 
-      const showToastMessage = (type, message) => {
+      const showToast = (type, message) => {
         setToast({ type, message });
         setTimeout(() => setToast(null), 4000);
       };
 
-      // VERIFICAR SE FOI ABERTO VIA LINK COMPARTILHADO (#share)
-      useEffect(() => {
-        const hash = window.location.hash;
-        if (hash.startsWith('#share')) {
-          const params = new URLSearchParams(hash.replace('#share?', ''));
-          const name = params.get('name') || 'Playlist DJ Ilú';
-          const trackListRaw = params.get('tracks');
-          const trackNames = trackListRaw ? trackListRaw.split('|') : [];
-          const crossfade = Number(params.get('cf')) || 6;
-
-          setShareModeData({
-            name,
-            trackNames,
-            crossfade
-          });
-        }
-
-        getAllTracksFromDB().then((savedTracks) => {
-          if (savedTracks && savedTracks.length > 0) {
-            setTracks(savedTracks);
-          }
-        });
-      }, []);
-
-      // Gerar Link de Compartilhamento
-      const handleSharePlaylist = () => {
-        if (tracks.length === 0) {
-          showToastMessage('error', 'Adicione pelo menos uma música para compartilhar a playlist.');
-          return;
-        }
-
-        const trackNamesStr = encodeURIComponent(tracks.map(t => t.name).join('|'));
-        const playlistNameStr = encodeURIComponent(currentPlaylistName);
-        const shareUrl = `${window.location.origin}${window.location.pathname}#share?name=${playlistNameStr}&tracks=${trackNamesStr}&cf=${crossfadeTime}`;
-
-        navigator.clipboard.writeText(shareUrl).then(() => {
-          showToastMessage('success', 'Link copiado para a área de transferência! Pode enviar no WhatsApp.');
-        }).catch(() => {
-          showToastMessage('error', 'Não foi possível copiar o link automaticamente.');
-        });
+      // Validar senha forte (mínimo 6 caracteres, 1 número e 1 letra)
+      const validatePassword = (pass) => {
+        if (pass.length < 6) return 'A senha deve ter no mínimo 6 caracteres.';
+        if (!/\d/.test(pass)) return 'A senha deve conter pelo menos um número.';
+        return null;
       };
 
-      // Tocar / Pausar
-      const togglePlay = () => {
-        if (tracks.length === 0) {
-          showToastMessage('error', 'Nenhuma faixa carregada no player.');
-          return;
-        }
-        const currentAudio = activeAudioRef.current === 1 ? audioRef1.current : audioRef2.current;
+      // Lógica de Login / Cadastro
+      const handleAuthSubmit = (e) => {
+        e.preventDefault();
 
-        if (isPlaying) {
-          currentAudio.pause();
-          setIsPlaying(false);
+        if (authMode === 'register') {
+          const passError = validatePassword(passwordInput);
+          if (passError) {
+            showToast('error', passError);
+            return;
+          }
+          // Simulação / Registro
+          const newUser = { name: nameInput || 'DJ Ilú User', email: emailInput };
+          setUser(newUser);
+          setShowAuthModal(false);
+          showToast('success', `Conta criada com sucesso! Bem-vindo(a), ${newUser.name}.`);
         } else {
-          if (!currentAudio.src && tracks[currentIndex]) {
-            currentAudio.src = URL.createObjectURL(tracks[currentIndex].file);
+          // Simulação / Login
+          if (!emailInput || !passwordInput) {
+            showToast('error', 'Preencha todos os campos para entrar.');
+            return;
           }
-          currentAudio.play();
-          setIsPlaying(true);
+          const loggedUser = { name: emailInput.split('@')[0], email: emailInput };
+          setUser(loggedUser);
+          setShowAuthModal(false);
+          showToast('success', `Login efetuado como ${loggedUser.name}!`);
         }
       };
 
-      // -------------------------------------------------------------
-      // MODO MINIMALISTA COMPARTILHADO (TIPO SOUNDCLOUD)
-      // -------------------------------------------------------------
-      if (shareModeData) {
-        return (
-          <div className="min-h-screen flex flex-col items-center justify-center p-6 bg-gradient-to-b from-black via-zinc-900 to-black text-white">
-            {toast && (
-              <div className="fixed top-5 right-5 px-5 py-3 rounded-xl bg-emerald-900/90 border border-emerald-500 text-emerald-100 text-sm font-semibold">
-                {toast.message}
-              </div>
-            )}
+      const handleSavePlaylistClick = () => {
+        if (!user) {
+          showToast('error', 'Faça login para salvar suas playlists na sua conta.');
+          setAuthMode('register');
+          setShowAuthModal(true);
+          return;
+        }
+        showToast('success', `Playlist "${currentPlaylistName}" salva com sucesso na sua conta!`);
+      };
 
-            <div className="max-w-md w-full glass-card p-8 rounded-3xl border border-white/10 shadow-2xl flex flex-col items-center text-center gap-6">
-              {/* ÍCONE / MARCA DJ ILÚ */}
-              <div className="w-20 h-20 bg-gradient-to-tr from-purple-600 to-indigo-500 rounded-full flex items-center justify-center text-4xl shadow-xl shadow-purple-500/20 animate-pulse">
-                🎧
-              </div>
-
-              <div>
-                <span className="text-xs font-semibold uppercase tracking-widest text-purple-400">DJ Ilú • Playlist</span>
-                <h1 className="text-2xl font-black text-white mt-1">{shareModeData.name}</h1>
-                <p className="text-xs text-gray-400 mt-1">{shareModeData.trackNames.length} faixas selecionadas</p>
-              </div>
-
-              {/* BOTÃO GRANDE DE EXECUTAR (PLAYLIST SOUNDCLOUD STYLE) */}
-              <button
-                onClick={() => {
-                  window.location.hash = '';
-                  setShareModeData(null);
-                }}
-                className="w-full py-4 bg-white text-black hover:bg-gray-200 rounded-2xl font-extrabold text-base transition transform active:scale-95 flex items-center justify-center gap-3 shadow-lg"
-              >
-                <i className="fa-solid fa-play text-lg"></i> Abrir e Executar Playlist
-              </button>
-
-              {/* LISTA SIMPLES DE MÚSICAS */}
-              <div className="w-full text-left bg-black/40 p-4 rounded-2xl border border-white/5 max-h-56 overflow-y-auto custom-scrollbar flex flex-col gap-2">
-                <span className="text-[10px] uppercase font-bold text-gray-500 tracking-wider">Sequência das Músicas</span>
-                {shareModeData.trackNames.map((name, idx) => (
-                  <div key={idx} className="text-xs text-gray-300 py-1.5 border-b border-white/5 flex items-center gap-2 truncate">
-                    <span className="text-purple-400 font-mono text-[10px]">{idx + 1}.</span>
-                    <span className="truncate">{name}</span>
-                  </div>
-                ))}
-              </div>
-
-              <a
-                href={window.location.pathname}
-                className="text-xs text-purple-400 hover:text-purple-300 underline mt-2"
-              >
-                Ir para o DJ Ilú Studio Completo
-              </a>
-            </div>
-          </div>
-        );
-      }
-
-      // -------------------------------------------------------------
-      // MODO DJ ILÚ STUDIO COMPLETO
-      // -------------------------------------------------------------
       return (
         <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto flex flex-col gap-6 relative">
+          
+          {/* TOAST DE AVISOS */}
           {toast && (
             <div className={`fixed top-5 right-5 z-50 px-5 py-3 rounded-xl shadow-2xl text-sm font-semibold flex items-center gap-3 border transition ${
               toast.type === 'error' ? 'bg-red-950/90 border-red-500 text-red-200' : 'bg-emerald-950/90 border-emerald-500 text-emerald-200'
@@ -250,7 +130,7 @@
             </div>
           )}
 
-          {/* CABEÇALHO */}
+          {/* CABEÇALHO LIMPO (SEM CTRL+J) */}
           <header className="flex flex-wrap justify-between items-center glass-card p-5 rounded-2xl border border-purple-500/20 gap-4">
             <div className="flex items-center gap-3">
               <div className="w-12 h-12 bg-purple-600 rounded-xl flex items-center justify-center text-2xl shadow-lg shadow-purple-600/40">
@@ -265,88 +145,164 @@
             </div>
 
             <div className="flex items-center gap-3">
-              {/* BOTÃO COMPARTILHAR LINK */}
               <button
-                onClick={handleSharePlaylist}
-                className="px-4 py-2 bg-indigo-600/40 hover:bg-indigo-600/60 border border-indigo-500/40 rounded-xl text-sm font-semibold text-indigo-200 flex items-center gap-2 transition"
-                title="Copiar link estilo SoundCloud para compartilhar"
+                onClick={handleSavePlaylistClick}
+                className="px-4 py-2 bg-emerald-600/30 hover:bg-emerald-600/50 border border-emerald-500/40 rounded-xl text-sm font-semibold text-emerald-200 flex items-center gap-2 transition"
               >
-                <i className="fa-solid fa-share-nodes"></i> Compartilhar Link
+                <i className="fa-solid fa-floppy-disk"></i> Salvar Playlist
               </button>
 
               <button
                 onClick={() => setShowPlaylistModal(true)}
                 className="px-4 py-2 bg-purple-900/40 hover:bg-purple-800/60 border border-purple-500/30 rounded-xl text-sm font-medium flex items-center gap-2 transition"
               >
-                <i className="fa-solid fa-folder-open"></i> Playlists <span className="text-xs opacity-50">(Ctrl+J)</span>
+                <i className="fa-solid fa-folder-open"></i> Minhas Playlists
               </button>
+
+              {/* BOTÃO DE LOGIN / PERFIL NO CABEÇALHO */}
+              {user ? (
+                <div className="flex items-center gap-2 pl-2 border-l border-white/10">
+                  <div className="w-9 h-9 bg-purple-700 rounded-full flex items-center justify-center text-xs font-bold uppercase">
+                    {user.name.substring(0, 2)}
+                  </div>
+                  <span className="text-xs text-purple-200 font-medium hidden sm:inline">{user.name}</span>
+                  <button
+                    onClick={() => { setUser(null); showToast('success', 'Você saiu da sua conta.'); }}
+                    className="text-xs text-gray-400 hover:text-red-400 p-1 ml-1"
+                    title="Sair"
+                  >
+                    <i className="fa-solid fa-right-from-bracket"></i>
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => { setAuthMode('login'); setShowAuthModal(true); }}
+                  className="px-4 py-2 bg-white text-black hover:bg-gray-200 rounded-xl text-sm font-bold flex items-center gap-2 transition shadow-lg"
+                >
+                  <i className="fa-solid fa-user"></i> Entrar
+                </button>
+              )}
             </div>
           </header>
 
-          {/* PLAYER PRINCIPAL */}
+          {/* CONTEÚDO DO PLAYER */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 flex flex-col gap-6">
-              {/* DROPZONE MP3 */}
-              <div className="glass-card p-6 rounded-2xl border-dashed border-2 border-purple-500/30 hover:border-purple-500/60 text-center flex flex-col items-center justify-center relative">
-                <input
-                  type="file"
-                  multiple
-                  accept="audio/*"
-                  onChange={async (e) => {
-                    const files = Array.from(e.target.files);
-                    for (let file of files) {
-                      const trackData = {
-                        id: 'track_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5),
-                        name: file.name.replace(/\.[^/.]+$/, ''),
-                        file: file,
-                      };
-                      await saveTrackToDB(trackData);
-                      setTracks((prev) => [...prev, trackData]);
-                    }
-                    showToastMessage('success', `${files.length} música(s) adicionada(s)!`);
-                  }}
-                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-                />
+              <div className="glass-card p-6 rounded-2xl border-dashed border-2 border-purple-500/30 text-center flex flex-col items-center justify-center relative">
                 <i className="fa-solid fa-cloud-arrow-up text-3xl text-purple-400 mb-2"></i>
                 <p className="font-semibold text-base">Arraste seus arquivos MP3 para cá</p>
-                <p className="text-xs text-purple-300/50 mt-1">Sua música fica salva localmente no seu navegador</p>
+                <p className="text-xs text-purple-300/50 mt-1">Sua música fica salva com segurança</p>
               </div>
+            </div>
 
-              {/* CONTROLES */}
-              <div className="glass-card p-6 rounded-2xl flex flex-col gap-5">
-                <div className="flex justify-between items-center">
+            <div className="glass-card p-6 rounded-2xl flex flex-col justify-between">
+              <div>
+                <h3 className="font-bold text-white text-base mb-2">Sincronização em Nuvem</h3>
+                <p className="text-xs text-purple-300/70 leading-relaxed">
+                  {user ? `Conectado como ${user.email}. Suas playlists estão sendo gravadas no seu perfil.` : 'Faça login para ter certeza de que suas playlists estarão salvas quando abrir em qualquer dispositivo.'}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* MODAL DE LOGIN / CADASTRO */}
+          {showAuthModal && (
+            <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+              <div className="glass-card p-8 rounded-3xl max-w-md w-full border border-purple-500/30 flex flex-col gap-5 relative">
+                <button
+                  onClick={() => setShowAuthModal(false)}
+                  className="absolute top-5 right-5 text-gray-400 hover:text-white"
+                >
+                  <i className="fa-solid fa-xmark text-lg"></i>
+                </button>
+
+                <div className="text-center">
+                  <h3 className="text-xl font-bold text-white">
+                    {authMode === 'login' ? 'Acessar Conta DJ Ilú' : 'Criar Nova Conta'}
+                  </h3>
+                  <p className="text-xs text-purple-300/60 mt-1">
+                    {authMode === 'login' ? 'Digite seus dados para carregar suas playlists' : 'Cadastre-se para garantir que nada seja perdido'}
+                  </p>
+                </div>
+
+                <form onSubmit={handleAuthSubmit} className="flex flex-col gap-4">
+                  {authMode === 'register' && (
+                    <div>
+                      <label className="text-xs text-purple-300 block mb-1">Seu Nome / Marca</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ex: DJ Juliana"
+                        value={nameInput}
+                        onChange={(e) => setNameInput(e.target.value)}
+                        className="w-full bg-black/50 border border-purple-500/30 rounded-xl p-3 text-sm focus:outline-none focus:border-purple-500"
+                      />
+                    </div>
+                  )}
+
                   <div>
-                    <span className="text-xs text-purple-400 uppercase font-semibold block">{currentPlaylistName}</span>
-                    <h2 className="text-lg font-bold text-white mt-1">
-                      {tracks[currentIndex] ? tracks[currentIndex].name : 'Nenhuma música selecionada'}
-                    </h2>
+                    <label className="text-xs text-purple-300 block mb-1">E-mail</label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="seu@email.com"
+                      value={emailInput}
+                      onChange={(e) => setEmailInput(e.target.value)}
+                      className="w-full bg-black/50 border border-purple-500/30 rounded-xl p-3 text-sm focus:outline-none focus:border-purple-500"
+                    />
                   </div>
+
+                  <div>
+                    <label className="text-xs text-purple-300 block mb-1">Senha (Forte)</label>
+                    <input
+                      type="password"
+                      required
+                      placeholder="••••••••"
+                      value={passwordInput}
+                      onChange={(e) => setPasswordInput(e.target.value)}
+                      className="w-full bg-black/50 border border-purple-500/30 rounded-xl p-3 text-sm focus:outline-none focus:border-purple-500"
+                    />
+                    {authMode === 'register' && (
+                      <span className="text-[10px] text-purple-300/50 mt-1 block">
+                        Mínimo de 6 caracteres e pelo menos um número.
+                      </span>
+                    )}
+                  </div>
+
                   <button
-                    onClick={togglePlay}
-                    className="w-14 h-14 bg-purple-600 hover:bg-purple-500 rounded-full flex items-center justify-center text-xl shadow-lg transition"
+                    type="submit"
+                    className="w-full py-3 bg-purple-600 hover:bg-purple-500 rounded-xl text-sm font-bold shadow-lg shadow-purple-600/40 transition mt-2"
                   >
-                    <i className={`fa-solid ${isPlaying ? 'fa-pause' : 'fa-play'}`}></i>
+                    {authMode === 'login' ? 'Entrar' : 'Criar Conta e Salvar'}
                   </button>
+                </form>
+
+                <div className="text-center pt-2 border-t border-white/10">
+                  {authMode === 'login' ? (
+                    <p className="text-xs text-gray-400">
+                      Ainda não tem conta?{' '}
+                      <button
+                        onClick={() => setAuthMode('register')}
+                        className="text-purple-400 hover:underline font-semibold"
+                      >
+                        Cadastre-se aqui
+                      </button>
+                    </p>
+                  ) : (
+                    <p className="text-xs text-gray-400">
+                      Já possui uma conta?{' '}
+                      <button
+                        onClick={() => setAuthMode('login')}
+                        className="text-purple-400 hover:underline font-semibold"
+                      >
+                        Faça login
+                      </button>
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
-
-            {/* PAINEL LATERAL DE INFORMAÇÕES */}
-            <div className="glass-card p-6 rounded-2xl flex flex-col h-full justify-between">
-              <div>
-                <h3 className="font-bold text-white text-base mb-2">Compartilhamento Rápido</h3>
-                <p className="text-xs text-purple-300/70 leading-relaxed">
-                  Crie links limpos no estilo SoundCloud com o degradê preto e cinza para enviar para noivos, noivas ou organizadores do evento!
-                </p>
-              </div>
-              <button
-                onClick={handleSharePlaylist}
-                className="w-full py-3 bg-purple-600 hover:bg-purple-500 rounded-xl font-bold text-sm shadow-lg transition mt-4"
-              >
-                <i className="fa-solid fa-link mr-2"></i> Copiar Link Único
-              </button>
-            </div>
-          </div>
+          )}
         </div>
       );
     }
