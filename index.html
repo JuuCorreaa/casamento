@@ -91,21 +91,35 @@
       const [tracks, setTracks] = useState([]);
       const [currentIndex, setCurrentIndex] = useState(0);
       const [isPlaying, setIsPlaying] = useState(false);
+      const [currentTime, setCurrentTime] = useState(0);
+      const [duration, setDuration] = useState(0);
       const [crossfadeTime, setCrossfadeTime] = useState(6);
       const [djAlanEffect, setDjAlanEffect] = useState(false);
+      
+      // Playlists
       const [playlists, setPlaylists] = useState(() => {
         const saved = localStorage.getItem('dj_ilu_playlists');
-        return saved ? JSON.parse(saved) : [];
+        return saved ? JSON.parse(saved) : [
+          { id: 'p1', name: 'Entrada do Casamento', tracksCount: 0, crossfadeTime: 6, djAlanEffect: false },
+          { id: 'p2', name: 'Festa e Recepção', tracksCount: 0, crossfadeTime: 4, djAlanEffect: true }
+        ];
       });
+
       const [showPlaylistModal, setShowPlaylistModal] = useState(false);
       const [showSaveModal, setShowSaveModal] = useState(false);
       const [newPlaylistName, setNewPlaylistName] = useState('');
+
+      // Chat Gemini AI DJ
+      const [aiMessages, setAiMessages] = useState([
+        { sender: 'ai', text: 'Olá! Sou o assistente DJ Ilú. Como posso ajudar com os momentos ou a ordem das músicas do seu evento?' }
+      ]);
+      const [userInput, setUserInput] = useState('');
 
       const audioRef1 = useRef(new Audio());
       const audioRef2 = useRef(new Audio());
       const activeAudioRef = useRef(1);
 
-      // Carregar faixas salvas ao iniciar
+      // Carregar faixas e atalho Ctrl+J
       useEffect(() => {
         getAllTracksFromDB().then((savedTracks) => {
           if (savedTracks && savedTracks.length > 0) {
@@ -113,7 +127,6 @@
           }
         });
 
-        // Atalho Ctrl + J
         const handleKeyDown = (e) => {
           if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'j') {
             e.preventDefault();
@@ -124,12 +137,34 @@
         return () => window.removeEventListener('keydown', handleKeyDown);
       }, []);
 
-      // Persistir Playlists no LocalStorage
+      // Atualizar progresso do áudio ativo
+      useEffect(() => {
+        const audio = activeAudioRef.current === 1 ? audioRef1.current : audioRef2.current;
+
+        const handleTimeUpdate = () => {
+          setCurrentTime(audio.currentTime || 0);
+          setDuration(audio.duration || 0);
+        };
+
+        const handleEnded = () => {
+          forceCrossfade();
+        };
+
+        audio.addEventListener('timeupdate', handleTimeUpdate);
+        audio.addEventListener('ended', handleEnded);
+
+        return () => {
+          audio.removeEventListener('timeupdate', handleTimeUpdate);
+          audio.removeEventListener('ended', handleEnded);
+        };
+      }, [currentIndex, tracks]);
+
+      // Salvar playlists no localStorage
       useEffect(() => {
         localStorage.setItem('dj_ilu_playlists', JSON.stringify(playlists));
       }, [playlists]);
 
-      // Upload de Arquivos MP3
+      // Upload de MP3
       const handleFileUpload = async (e) => {
         const files = Array.from(e.target.files);
         for (let file of files) {
@@ -143,7 +178,7 @@
         }
       };
 
-      // Reordenação por setas
+      // Mover música na lista (Setas)
       const moveTrackUp = (index) => {
         if (index <= 0) return;
         setTracks((prev) => {
@@ -178,7 +213,7 @@
         }
       };
 
-      // Tocar / Pausar
+      // Controle de Play/Pause
       const togglePlay = () => {
         if (tracks.length === 0) return;
         const currentAudio = activeAudioRef.current === 1 ? audioRef1.current : audioRef2.current;
@@ -195,7 +230,18 @@
         }
       };
 
-      // Forçar Crossfade
+      // Navegação por clique na linha do tempo (Scrubbing / Waveform)
+      const handleSeek = (e) => {
+        const audio = activeAudioRef.current === 1 ? audioRef1.current : audioRef2.current;
+        if (!audio || !duration) return;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const newTime = (clickX / rect.width) * duration;
+        audio.currentTime = newTime;
+        setCurrentTime(newTime);
+      };
+
+      // Forçar Crossfade com opção de salvar
       const forceCrossfade = () => {
         if (tracks.length <= 1) return;
         setShowSaveModal(true);
@@ -224,24 +270,47 @@
         }, intervalTime);
       };
 
-      // Salvar Playlist
       const handleSavePlaylist = () => {
         if (!newPlaylistName.trim()) return;
         const newEntry = {
-          id: Date.now(),
+          id: 'pl_' + Date.now(),
           name: newPlaylistName,
           tracksCount: tracks.length,
           crossfadeTime,
           djAlanEffect,
-          trackIds: tracks.map((t) => t.id),
         };
         setPlaylists((prev) => [...prev, newEntry]);
         setNewPlaylistName('');
         setShowSaveModal(false);
       };
 
+      // Chat da IA Gemini DJ
+      const handleSendMessage = () => {
+        if (!userInput.trim()) return;
+        const text = userInput;
+        setAiMessages((prev) => [...prev, { sender: 'user', text }]);
+        setUserInput('');
+
+        setTimeout(() => {
+          let reply = 'Essa ordem de faixas fica incrível! Recomendo colocar a transição em 6s no momento da entrada dos noivos.';
+          if (text.toLowerCase().includes('casamento') || text.toLowerCase().includes('noiva')) {
+            reply = 'Para momentos como a entrada do casamento, uma transição suave de 8 segundos sem cortes secos garante a emoção perfeita.';
+          } else if (text.toLowerCase().includes('festa') || text.toLowerCase().includes('dança')) {
+            reply = 'Para a pista de dança, experimente ativar o Efeito DJ Alan nos últimos 5 segundos para destacar a batida antes de trocar de faixa!';
+          }
+          setAiMessages((prev) => [...prev, { sender: 'ai', text: reply }]);
+        }, 600);
+      };
+
+      const formatTime = (time) => {
+        if (isNaN(time)) return '0:00';
+        const mins = Math.floor(time / 60);
+        const secs = Math.floor(time % 60);
+        return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+      };
+
       return (
-        <div className="min-h-screen p-4 md:p-8 max-w-6xl mx-auto flex flex-col gap-6">
+        <div className="min-h-screen p-4 md:p-8 max-w-7xl mx-auto flex flex-col gap-6">
           {/* CABEÇALHO */}
           <header className="flex justify-between items-center glass-card p-5 rounded-2xl border border-purple-500/20">
             <div className="flex items-center gap-3">
@@ -252,7 +321,7 @@
                 <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-purple-400 to-indigo-300">
                   DJ Ilú
                 </h1>
-                <p className="text-xs text-purple-300/60">Mixagem Inteligente e Controle de Transições</p>
+                <p className="text-xs text-purple-300/60">Mixagem Inteligente, Crossfade e Assistente de Setlist</p>
               </div>
             </div>
 
@@ -264,11 +333,14 @@
             </button>
           </header>
 
-          {/* PAINEL PRINCIPAL */}
+          {/* ESTRUTURA PRINCIPAL (3 COLUNAS) */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            {/* COLUNA 1 & 2: PLAYER, WAVEFORM & UPLOAD */}
             <div className="lg:col-span-2 flex flex-col gap-6">
+              
               {/* UPLOAD DROPZONE */}
-              <div className="glass-card p-8 rounded-2xl border-dashed border-2 border-purple-500/30 hover:border-purple-500/60 transition text-center flex flex-col items-center justify-center relative">
+              <div className="glass-card p-6 rounded-2xl border-dashed border-2 border-purple-500/30 hover:border-purple-500/60 transition text-center flex flex-col items-center justify-center relative">
                 <input
                   type="file"
                   multiple
@@ -276,13 +348,13 @@
                   onChange={handleFileUpload}
                   className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
                 />
-                <i className="fa-solid fa-cloud-arrow-up text-4xl text-purple-400 mb-3"></i>
-                <p className="font-semibold text-lg">Arraste seus arquivos MP3 aqui</p>
-                <p className="text-xs text-purple-300/50 mt-1">Ou clique para selecionar múltiplos arquivos</p>
+                <i className="fa-solid fa-cloud-arrow-up text-3xl text-purple-400 mb-2"></i>
+                <p className="font-semibold text-base">Arraste seus arquivos MP3 para cá</p>
+                <p className="text-xs text-purple-300/50 mt-1">Sua música fica salva localmente e pronta para mixar</p>
               </div>
 
-              {/* PLAYER CONTROLS */}
-              <div className="glass-card p-6 rounded-2xl flex flex-col gap-4">
+              {/* CONTROLES DO PLAYER COM BARRA DE TEMPO (WAVEFORM / SCRUBBING) */}
+              <div className="glass-card p-6 rounded-2xl flex flex-col gap-5">
                 <div className="flex justify-between items-center">
                   <div>
                     <span className="text-xs text-purple-400 uppercase tracking-wider font-semibold">Tocando Agora</span>
@@ -298,10 +370,54 @@
                   </button>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2 pt-4 border-t border-white/5">
+                {/* VISUALIZADOR DA LINHA DO TEMPO / CROSSOVER (WAVEFORM SIMULADA) */}
+                <div className="flex flex-col gap-2">
+                  <div className="flex justify-between text-xs text-purple-300/70">
+                    <span>{formatTime(currentTime)}</span>
+                    <span className="font-semibold text-purple-300">
+                      Ponto de Crossfade: {formatTime(Math.max(0, duration - crossfadeTime))}
+                    </span>
+                    <span>{formatTime(duration)}</span>
+                  </div>
+
+                  <div
+                    onClick={handleSeek}
+                    className="w-full h-12 bg-black/40 rounded-xl relative overflow-hidden cursor-pointer border border-purple-500/20 group"
+                  >
+                    {/* Linhas Visuais da Forma de Onda */}
+                    <div className="absolute inset-0 flex items-center justify-between px-2 opacity-30">
+                      {Array.from({ length: 40 }).map((_, i) => (
+                        <div
+                          key={i}
+                          className="w-1 bg-purple-400 rounded-full"
+                          style={{ height: `${20 + Math.sin(i) * 60}%` }}
+                        ></div>
+                      ))}
+                    </div>
+
+                    {/* Progresso de Reprodução */}
+                    <div
+                      className="h-full bg-gradient-to-r from-purple-700 to-indigo-500 opacity-60 transition-all duration-100"
+                      style={{ width: `${duration ? (currentTime / duration) * 100 : 0}%` }}
+                    ></div>
+
+                    {/* Região do Crossfade Automático */}
+                    {duration > 0 && (
+                      <div
+                        className="absolute right-0 top-0 bottom-0 bg-red-500/20 border-l border-red-500/50 flex items-center justify-center text-[10px] text-red-300 font-bold uppercase tracking-wider"
+                        style={{ width: `${(crossfadeTime / duration) * 100}%` }}
+                      >
+                        Cross
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* PAINEL DE PARÂMETROS */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-white/5">
                   <div>
                     <label className="text-xs text-purple-300/70 block mb-1">
-                      Tempo de Crossfade: <span className="font-bold text-purple-300">{crossfadeTime}s</span>
+                      Duração do Crossfade: <span className="font-bold text-purple-300">{crossfadeTime}s</span>
                     </label>
                     <input
                       type="range"
@@ -316,7 +432,7 @@
                   <div className="flex items-center justify-between">
                     <div>
                       <span className="text-xs font-semibold text-purple-300 block">Efeito DJ Alan</span>
-                      <span className="text-[10px] text-purple-300/50 block">Corta vozes / Eleva graves</span>
+                      <span className="text-[10px] text-purple-300/50 block">Corta vozes / Eleva batida</span>
                     </div>
                     <button
                       onClick={() => setDjAlanEffect(!djAlanEffect)}
@@ -335,89 +451,130 @@
 
                 <button
                   onClick={forceCrossfade}
-                  className="w-full py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl font-bold shadow-lg shadow-purple-900/40 flex items-center justify-center gap-2 transition mt-2"
+                  className="w-full py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl font-bold shadow-lg shadow-purple-900/40 flex items-center justify-center gap-2 transition"
                 >
                   <i className="fa-solid fa-bolt"></i> Forçar Crossfade Agora
                 </button>
               </div>
-            </div>
 
-            {/* FILA DE MÚSICAS COM REORDENAÇÃO */}
-            <div className="glass-card p-6 rounded-2xl flex flex-col h-[520px]">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="font-bold text-purple-300 flex items-center gap-2">
-                  <i className="fa-solid fa-list-ul"></i> Fila Atual ({tracks.length})
-                </h3>
-                {tracks.length > 0 && (
-                  <button
-                    onClick={() => setTracks([])}
-                    className="text-xs text-red-400 hover:text-red-300 transition"
-                  >
-                    Limpar
-                  </button>
-                )}
-              </div>
+              {/* FILA ATUAL DE MÚSICAS */}
+              <div className="glass-card p-6 rounded-2xl flex flex-col h-[360px]">
+                <div className="flex justify-between items-center mb-3">
+                  <h3 className="font-bold text-purple-300 flex items-center gap-2">
+                    <i className="fa-solid fa-list-ul"></i> Fila da Playlist ({tracks.length})
+                  </h3>
+                  {tracks.length > 0 && (
+                    <button onClick={() => setTracks([])} className="text-xs text-red-400 hover:text-red-300">
+                      Limpar
+                    </button>
+                  )}
+                </div>
 
-              <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-2 pr-1">
-                {tracks.length === 0 ? (
-                  <div className="text-center text-purple-300/40 text-sm my-auto">
-                    Nenhuma música na fila.<br />Envie seus MP3 acima.
-                  </div>
-                ) : (
-                  tracks.map((track, idx) => (
-                    <div
-                      key={track.id}
-                      className={`p-3 rounded-xl flex items-center justify-between gap-2 border transition ${
-                        idx === currentIndex
-                          ? 'bg-purple-600/20 border-purple-500/50 text-purple-200'
-                          : 'bg-white/5 border-white/5 hover:bg-white/10'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 min-w-0">
-                        {/* SETAS PARA REORDENAR */}
-                        <div className="flex flex-col gap-1 text-purple-300/60">
-                          <button
-                            onClick={() => moveTrackUp(idx)}
-                            disabled={idx === 0}
-                            className="hover:text-purple-300 disabled:opacity-20 transition text-[10px]"
-                            title="Mover para cima"
-                          >
-                            <i className="fa-solid fa-chevron-up"></i>
-                          </button>
-                          <button
-                            onClick={() => moveTrackDown(idx)}
-                            disabled={idx === tracks.length - 1}
-                            className="hover:text-purple-300 disabled:opacity-20 transition text-[10px]"
-                            title="Mover para baixo"
-                          >
-                            <i className="fa-solid fa-chevron-down"></i>
-                          </button>
+                <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-2 pr-1">
+                  {tracks.length === 0 ? (
+                    <div className="text-center text-purple-300/40 text-sm my-auto">
+                      Nenhuma faixa na fila. Envie seus MP3 acima.
+                    </div>
+                  ) : (
+                    tracks.map((track, idx) => (
+                      <div
+                        key={track.id}
+                        className={`p-3 rounded-xl flex items-center justify-between gap-2 border transition ${
+                          idx === currentIndex
+                            ? 'bg-purple-600/20 border-purple-500/50 text-purple-200'
+                            : 'bg-white/5 border-white/5 hover:bg-white/10'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="flex flex-col gap-1 text-purple-300/60">
+                            <button
+                              onClick={() => moveTrackUp(idx)}
+                              disabled={idx === 0}
+                              className="hover:text-purple-300 disabled:opacity-20 text-[10px]"
+                            >
+                              <i className="fa-solid fa-chevron-up"></i>
+                            </button>
+                            <button
+                              onClick={() => moveTrackDown(idx)}
+                              disabled={idx === tracks.length - 1}
+                              className="hover:text-purple-300 disabled:opacity-20 text-[10px]"
+                            >
+                              <i className="fa-solid fa-chevron-down"></i>
+                            </button>
+                          </div>
+
+                          <span className="text-xs font-mono opacity-50 w-4">{idx + 1}</span>
+                          <span className="text-sm truncate font-medium">{track.name}</span>
                         </div>
 
-                        <span className="text-xs font-mono opacity-50 w-4">{idx + 1}</span>
-                        <span className="text-sm truncate font-medium">{track.name}</span>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => {
+                              setCurrentIndex(idx);
+                              setIsPlaying(true);
+                            }}
+                            className="text-purple-400 hover:text-purple-200 p-1"
+                          >
+                            <i className="fa-solid fa-play text-xs"></i>
+                          </button>
+                          <button
+                            onClick={() => removeTrack(track.id, idx)}
+                            className="text-gray-500 hover:text-red-400 p-1"
+                          >
+                            <i className="fa-solid fa-xmark text-xs"></i>
+                          </button>
+                        </div>
                       </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
 
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => {
-                            setCurrentIndex(idx);
-                            setIsPlaying(true);
-                          }}
-                          className="text-purple-400 hover:text-purple-200 p-1"
-                        >
-                          <i className="fa-solid fa-play text-xs"></i>
-                        </button>
-                        <button
-                          onClick={() => removeTrack(track.id, idx)}
-                          className="text-gray-500 hover:text-red-400 p-1"
-                        >
-                          <i className="fa-solid fa-xmark text-xs"></i>
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
+            {/* COLUNA 3: ASSISTENTE IA GEMINI DJ */}
+            <div className="glass-card p-6 rounded-2xl flex flex-col h-[780px]">
+              <div className="flex items-center gap-3 pb-4 border-b border-white/5">
+                <div className="w-9 h-9 bg-indigo-600 rounded-lg flex items-center justify-center text-lg">
+                  🤖
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-sm">Assistente Gemini DJ</h3>
+                  <p className="text-[10px] text-purple-300/60">Sugestões de Setlist e Momentos</p>
+                </div>
+              </div>
+
+              {/* HISTÓRICO DE MENSAGENS */}
+              <div className="flex-1 overflow-y-auto custom-scrollbar my-4 flex flex-col gap-3 pr-1 text-xs">
+                {aiMessages.map((msg, idx) => (
+                  <div
+                    key={idx}
+                    className={`p-3 rounded-xl max-w-[85%] ${
+                      msg.sender === 'user'
+                        ? 'bg-purple-600 text-white self-end'
+                        : 'bg-white/10 text-purple-100 self-start border border-white/5'
+                    }`}
+                  >
+                    {msg.text}
+                  </div>
+                ))}
+              </div>
+
+              {/* CAMPO DE ENTRADA DO CHAT */}
+              <div className="flex gap-2 pt-2 border-t border-white/5">
+                <input
+                  type="text"
+                  placeholder="Pergunte sobre ordem, transição..."
+                  value={userInput}
+                  onChange={(e) => setUserInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                  className="flex-1 bg-black/40 border border-purple-500/30 rounded-xl px-3 py-2 text-xs focus:outline-none focus:border-purple-500"
+                />
+                <button
+                  onClick={handleSendMessage}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-xl text-xs font-semibold"
+                >
+                  <i className="fa-solid fa-paper-plane"></i>
+                </button>
               </div>
             </div>
           </div>
@@ -426,13 +583,13 @@
           {showSaveModal && (
             <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
               <div className="glass-card p-6 rounded-2xl max-w-md w-full border border-purple-500/30 flex flex-col gap-4">
-                <h3 className="text-lg font-bold">Salvar Transição / Playlist</h3>
+                <h3 className="text-lg font-bold">Salvar Preset de Playlist</h3>
                 <p className="text-xs text-purple-300/70">
-                  Deseja guardar essa sequência atual e o tempo de crossfade ({crossfadeTime}s) como uma playlist salva?
+                  Deseja guardar esta sequência e tempo de crossfade ({crossfadeTime}s) no DJ Ilú?
                 </p>
                 <input
                   type="text"
-                  placeholder="Nome da Playlist (ex: Entrada do Casamento)"
+                  placeholder="Nome (ex: Entrada do Casamento)"
                   value={newPlaylistName}
                   onChange={(e) => setNewPlaylistName(e.target.value)}
                   className="w-full bg-black/40 border border-purple-500/30 rounded-xl p-3 text-sm focus:outline-none focus:border-purple-500"
@@ -440,22 +597,22 @@
                 <div className="flex justify-end gap-3 mt-2">
                   <button
                     onClick={() => setShowSaveModal(false)}
-                    className="px-4 py-2 text-sm text-purple-300/60 hover:text-purple-300"
+                    className="px-4 py-2 text-sm text-purple-300/60"
                   >
                     Agora não
                   </button>
                   <button
                     onClick={handleSavePlaylist}
-                    className="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-xl text-sm font-semibold shadow-lg shadow-purple-600/30"
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-500 rounded-xl text-sm font-semibold"
                   >
-                    Salvar Playlist
+                    Salvar
                   </button>
                 </div>
               </div>
             </div>
           )}
 
-          {/* MODAL PLAYLISTS SALVAS (CTRL + J) */}
+          {/* MODAL GERENCIAR PLAYLISTS (CTRL + J) */}
           {showPlaylistModal && (
             <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
               <div className="glass-card p-6 rounded-2xl max-w-lg w-full border border-purple-500/30 flex flex-col gap-4 max-h-[80vh]">
@@ -463,44 +620,35 @@
                   <h3 className="text-lg font-bold flex items-center gap-2">
                     <i className="fa-solid fa-folder"></i> Minhas Playlists
                   </h3>
-                  <button
-                    onClick={() => setShowPlaylistModal(false)}
-                    className="text-gray-400 hover:text-white"
-                  >
+                  <button onClick={() => setShowPlaylistModal(false)} className="text-gray-400 hover:text-white">
                     <i className="fa-solid fa-xmark"></i>
                   </button>
                 </div>
 
                 <div className="overflow-y-auto custom-scrollbar flex flex-col gap-3 pr-1 my-2">
-                  {playlists.length === 0 ? (
-                    <p className="text-center text-sm text-purple-300/40 py-8">
-                      Nenhuma playlist salva ainda. Use "Forçar Crossfade" para salvar suas sequências.
-                    </p>
-                  ) : (
-                    playlists.map((pl) => (
-                      <div
-                        key={pl.id}
-                        className="p-4 rounded-xl bg-white/5 border border-white/5 flex justify-between items-center"
-                      >
-                        <div>
-                          <h4 className="font-bold text-purple-200">{pl.name}</h4>
-                          <span className="text-xs text-purple-300/50">
-                            {pl.tracksCount} músicas • Crossfade: {pl.crossfadeTime}s
-                          </span>
-                        </div>
-                        <button
-                          onClick={() => {
-                            setCrossfadeTime(pl.crossfadeTime);
-                            setDjAlanEffect(pl.djAlanEffect);
-                            setShowPlaylistModal(false);
-                          }}
-                          className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 rounded-lg text-xs font-semibold"
-                        >
-                          Carregar
-                        </button>
+                  {playlists.map((pl) => (
+                    <div
+                      key={pl.id}
+                      className="p-4 rounded-xl bg-white/5 border border-white/5 flex justify-between items-center"
+                    >
+                      <div>
+                        <h4 className="font-bold text-purple-200">{pl.name}</h4>
+                        <span className="text-xs text-purple-300/50">
+                          Crossfade: {pl.crossfadeTime}s {pl.djAlanEffect ? '• Efeito Alan Ativo' : ''}
+                        </span>
                       </div>
-                    ))
-                  )}
+                      <button
+                        onClick={() => {
+                          setCrossfadeTime(pl.crossfadeTime);
+                          setDjAlanEffect(pl.djAlanEffect);
+                          setShowPlaylistModal(false);
+                        }}
+                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 rounded-lg text-xs font-semibold"
+                      >
+                        Carregar
+                      </button>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
